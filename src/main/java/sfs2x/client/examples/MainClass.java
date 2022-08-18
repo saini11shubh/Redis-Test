@@ -7,7 +7,6 @@ public class MainClass {
 		try (Scanner scanner = new Scanner(System.in)) {
 			System.out.print("Please enter you username: ");
 			String username = scanner.next();
-
 			SFS2XConnector sfs = new SFS2XConnector(username);
 			sfs.putData();
 			sfs.showAllRecords();

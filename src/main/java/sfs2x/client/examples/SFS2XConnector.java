@@ -23,7 +23,6 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
 import redis.clients.jedis.Jedis;
 import sfs2x.client.SmartFox;
-import sfs2x.client.core.BaseEvent;
 import sfs2x.client.core.SFSEvent;
 import sfs2x.client.entities.Room;
 import sfs2x.client.requests.JoinRoomRequest;
@@ -45,48 +44,63 @@ public class SFS2XConnector {
 		cfg.setDebug(false);
 
 		this.userName = userName;
-
 		// Set up event handlers
 		sfs = new SmartFox();
-		sfs.addEventListener(SFSEvent.CONNECTION, this::onConnection);
-		sfs.addEventListener(SFSEvent.CONNECTION_LOST, this::onConnectionLost);
-		sfs.addEventListener(SFSEvent.LOGIN, this::onLogin);
-		sfs.addEventListener(SFSEvent.LOGIN_ERROR, this::onLoginError);
-		sfs.addEventListener(SFSEvent.ROOM_JOIN, this::onRoomJoin);
+		sfs.addEventListener(SFSEvent.CONNECTION, evt -> {
+			boolean success = (boolean) evt.getArguments().get("success");
+			if (success) {
+				System.out.println("Connection success");
+				sfs.send(new LoginRequest(userName));
+			} else {
+				System.out.println("Connection Failed. Is the server running?");
+			}
+		});
+		sfs.addEventListener(SFSEvent.CONNECTION_LOST, evt -> {
+			System.out.println("-- Connection lost --");
+		});
+		sfs.addEventListener(SFSEvent.LOGIN, evt -> {
+			System.out.println("Logged in as: " + sfs.getMySelf().getName());
+			sfs.send(new JoinRoomRequest("The Lobby"));
+		});
+		sfs.addEventListener(SFSEvent.LOGIN_ERROR, evt -> {
+			String message = (String) evt.getArguments().get("errorMessage");
+			System.out.println("Login failed. Cause: " + message);
+		});
+		sfs.addEventListener(SFSEvent.ROOM_JOIN, evt -> {
+			Room room = (Room) evt.getArguments().get("room");
+			System.out.println("Joined Room: " + room.getName());
+		});
 		sfs.addEventListener(SFSEvent.ADMIN_MESSAGE, baseEvent -> {
 			System.out.println("Message from Server Admin: " + baseEvent.getArguments().get("message"));
 		});
-
 		sfs.connect(cfg);
 		connect();
 	}
 
+	// connect Java to Database
 	private void connect() throws ClassNotFoundException, SQLException {
 		Class.forName("com.mysql.cj.jdbc.Driver");
 		conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/Redis", "root", "root");
 	}
 
+	// insert user data in database table
 	public void putData() throws SQLException, JsonProcessingException {
 		UserModel user = new UserModel(userName, LocalDate.now(), LocalTime.now());
+		PreparedStatement preparedState = conn.prepareStatement(
+				"insert into userData (user_name, Date,Time) values (?,?,?)", PreparedStatement.RETURN_GENERATED_KEYS);
+		preparedState.setString(1, user.getUsername());
+		preparedState.setDate(2, Date.valueOf(user.getDate()));
+		preparedState.setTime(3, Time.valueOf(user.getTime()));
+		preparedState.execute();
 
-		PreparedStatement ps = conn.prepareStatement("insert into userData (user_name, Date,Time) values (?,?,?)",
-				PreparedStatement.RETURN_GENERATED_KEYS);
-		ps.setString(1, user.getUsername());
-		ps.setDate(2, Date.valueOf(user.getDate()));
-		ps.setTime(3, Time.valueOf(user.getTime()));
-		ps.execute();
-
-		ResultSet rs = ps.getGeneratedKeys();
-		if (rs.next()) {
-			int userId = rs.getInt(1);
+		ResultSet resultSet = preparedState.getGeneratedKeys();
+		if (resultSet.next()) {
+			int userId = resultSet.getInt(1);
 			user.setUserId(userId);
-
 			ObjectMapper mapper = getObjectMapper();
-			jedis.set(String.valueOf(userId), mapper.writeValueAsString(user));
+			jedis.set(String.valueOf(userId), mapper.writeValueAsString(user)); // set data on Redis and key is userId
 		}
-
 		System.out.println("Success");
-
 	}
 
 	public ObjectMapper getObjectMapper() {
@@ -98,7 +112,7 @@ public class SFS2XConnector {
 		mapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
 		return mapper;
 	}
-
+	
 	public void showAllRecords() throws JsonMappingException, JsonProcessingException {
 		Set<String> keys = jedis.keys("*");
 		List<UserModel> users = new ArrayList<>();
@@ -108,45 +122,7 @@ public class SFS2XConnector {
 			UserModel user = objectMapper.readValue(obj, UserModel.class);
 			users.add(user);
 		}
-
 		System.out.println("Total users : " + users.size());
 		users.stream().forEach(System.out::println);
 	}
-
-	// ----------------------------------------------------------------------
-	// Event Handlers
-	// ----------------------------------------------------------------------
-
-	private void onConnection(BaseEvent evt) {
-		boolean success = (boolean) evt.getArguments().get("success");
-
-		if (success) {
-			System.out.println("Connection success");
-			sfs.send(new LoginRequest(userName));
-		} else {
-			System.out.println("Connection Failed. Is the server running?");
-		}
-	}
-
-	private void onConnectionLost(BaseEvent evt) {
-		System.out.println("-- Connection lost --");
-	}
-
-	private void onLogin(BaseEvent evt) {
-		System.out.println("Logged in as: " + sfs.getMySelf().getName());
-
-		sfs.send(new JoinRoomRequest("The Lobby"));
-	}
-
-	private void onLoginError(BaseEvent evt) {
-		String message = (String) evt.getArguments().get("errorMessage");
-		System.out.println("Login failed. Cause: " + message);
-	}
-
-	private void onRoomJoin(BaseEvent evt) {
-		Room room = (Room) evt.getArguments().get("room");
-		System.out.println("Joined Room: " + room.getName());
-	}
-
-	// ----------------------------------------------------------------------
 }
